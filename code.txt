@@ -1,0 +1,684 @@
+1. Quality controlling
+
+fastqc *
+for i in $(ls | awk -F '_' '{print $1}' | sort |uniq );do 
+	trimmomatic PE -threads 30 -summary summary.txt $i\_1.fq.gz $i\_2.fq.gz $i\_1.paired.fq.gz $i\_1.unpaired.fq.gz $i\_2.paired.fq.gz $i\_2.unpaired.fq.gz ILLUMINACLIP:Adaptor.txt:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+done
+
+2. Assembly, mapping and binning
+for i in $(ls | awk -F '_' '{print $1}' | sort |uniq ); do
+	/lustre/quanzx/SPAdes-3.13.1-Linux/bin/spades.py -1 $i\_1.paired.fq.gz -2 $i\_2.paired.fq.gz --meta -o $i.spades -t 80 -m 500 -k 21,33,55,75
+	cp $i.spades/scaffolds.fasta $i.scaffolds.fasta
+done
+
+
+for i in $(ls | awk -F '.' '{print $1}' | sort |uniq ); do
+	bwa index $i.scaffolds.fasta
+	bwa mem -t 30 $i.scaffolds.fasta $i\_1.paired.fq.gz $i\_2.paired.fq.gz > $i.sam
+	samtools view -@ 30 -bS $i.sam > $i.bam
+	samtools sort -@ 30 $i.bam $i.sort
+	samtools index $i.sort.bam
+	jgi_summarize_bam_contig_depths --outputDepth $i\_depth.txt --pairedContigs $i\_paired.txt --minContigLength 600 --minContigDepth 2 $i.sort.bam
+	metabat2 -i $i.scaffolds.fasta -a $i\_depth.txt -o metabat/$i\_bin
+done
+
+3. Bin estiamtion and dereplication
+
+checkm tree -x fasta -t 30 metabat metabat_tree --pplacer_threads 30
+checkm lineage_set metabat_tree marker_file
+checkm analyze -x fasta marker_file metabat metabat_analyze -t 30
+checkm tree_qa metabat_tree -o 2 --tab_table > metabat_tree_qa
+checkm ssu_finder final.contigs.fa metabat ssu_finder -t 30 -q -x fasta
+checkm coverage -x fasta metabat metabat_coverage MBT11000sedi_sorted.bam -t 30
+checkm qa marker_file metabat_analyze -o 2 -t 30 -q -f metabat_qa -c metabat_coverage --tab_table
+checkm bin_qa_plot -x fasta --image_type pdf --dpi 300 metabat_analyze metabat plots
+
+dRep dereplicate drep_bin -g select_bin/*.fasta
+
+4. Classification
+
+gtdbtk classify_wf --genome_dir drep_bin --out_dir gtdb_out --extension fasta --cpus 40 --pplacer_cpus 40
+
+5. Phylogenetic analysis
+
+iqtree -s gtdbtk.ar122.user_msa.fasta -m MFP -bb 1000 -bnni -nt AUTO -cmax 15 -redo
+
+6. Bins composition analysis
+
+for i in drep_bin/*.fa
+do
+coverm contig --methods trimmed_mean --coupled MT1_1.paired.fastq MT1_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT1/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT2_1.paired.fastq MT2_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT2/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT3_1.paired.fastq MT3_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT3/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT4_1.paired.fastq MT4_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT4/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT5_1.paired.fastq MT5_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT5/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT6_1.paired.fastq MT6_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT6/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT7_1.paired.fastq MT7_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT7/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT8_1.paired.fastq MT8_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT8/$(basename $i .fa)
+coverm contig --methods trimmed_mean --coupled MT9_1.paired.fastq MT9_2.paired.fastq --min-read-percent-identity 95 --min-read-aligned-percent 75 --reference $i --threads 40 --output-file MT9/$(basename $i .fa)
+done
+
+7. Profile of contig composition
+# Using output of <jgi_summarize_bam_contig_depths> to get the coverage information of contigs from each MAGs.
+jgi_summarize_bam_contig_depths --outputDepth MT1_depth.txt --pairedContigs MT1_paired.txt --minContigLength 600 --minContigDepth 2 MT1_bwa.sort.bam
+# Using output of <gtdbtk classify_wf> to get the taxonomic information of contigs from each MAGs.
+# Visualization using R.
+```
+MT1_id <- read.csv("MT1_id.csv")
+MT1_bac_ta <- read.csv("MT1_ta.csv")
+MT1_bac <- merge(x=MT1_id,y=MT1_bac_ta,by="BinId")
+
+MT1_ta <- read.csv("MT1_ta-only-Thaumarchaeota.csv")
+MT1_coverage <- read.csv("MT1_coverage.txt",sep = '\t')
+MT1_all_coverage <- read.csv("MT1_all_coverage.txt",sep = '\t')
+MT1 <- merge(x=MT1_ta,y=MT1_all_coverage,by='BinId')
+MT1_GC <- read.csv("../MT1_scaffolds.txt",sep = '\t')
+MT1 <- merge(x=MT1,y=MT1_GC,by='Sequence.Id')
+
+MT1_cut <- MT1[-which(MT1$Sequence.length..bp.<4999),]
+MT1_cut$Phylum = factor(MT1_cut$Phylum, levels=c('Thaumarchaeota','Actinobacteriota','Bacteroidota','Chloroflexota','Marinisomatota','Proteobacteria','Planctomycetota','KSB1','Others','Unbinned'))
+library(ggplot2)
+library(ggforce)
+plot1_cut <- ggplot(MT1_cut, aes(x=100*GC, y=Coverage, fill=Phylum, size=Sequence.length..bp.))+
+  geom_point(alpha=0.85,shape=21)+
+  scale_fill_manual(values=c('#984ea3','#ff7f00','#ffff33','#a65628','#f781bf','#e41a1c','#377eb8','#4daf4a','#b3de69','#d9d9d9'))+
+  scale_alpha_manual(values=0.9)+
+  theme(axis.text.y=element_text(family="sans",size=12,face="plain"), 
+        axis.title.y=element_text(family="sans",size = 15,face="bold"), 
+        axis.text.x=element_text(family="sans",size=12,face="plain"), 
+        axis.title.x=element_text(family="sans",size = 15,face="bold"), 
+        panel.border = element_blank(),
+        axis.line = element_line(size=0.75), 
+        legend.position = "none",
+        panel.background = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key = element_blank(),
+        )+
+  scale_size('Contig length (nt)',breaks = c(5000,10000,20000,50000,100000))+
+  ylab("Coverage")+xlab("GC (%)")
+plot1_cut
+
+require(dplyr)
+MT1_cut_Thaumarchaeota <- MT1_cut%>%filter(Phylum=="Thaumarchaeota")
+plot1_cut_Thaumarchaeota <- ggplot(MT1_cut_Thaumarchaeota, aes(x=100*GC, y=Coverage, fill=Phylum, size=Sequence.length..bp.))+
+  geom_point(alpha=0.85,shape=21)+
+  scale_fill_manual(values=c("#984ea3"))+scale_alpha_manual(values=0.9)+
+  theme(axis.title.y=element_text(family="sans",color = 'black',size = 15,face="plain"), 
+        axis.title.x=element_text(family="sans",color = 'black',size = 15,face="plain"), 
+        panel.border = element_blank(),
+        axis.line = element_line(size=0.75), 
+        legend.position='none',
+        panel.background = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()
+        )+
+  ylab("Coverage")+xlab("GC (%)")
+plot1_cut_Thaumarchaeota
+
+7. Reconstruction of functional networks using metabolic
+perl METABOLIC-C.pl -t 40 -p meta -in-gn ./bin -r ./SampleMariana/path.txt (#paired reads path) -o mariana_out
+
+8. Annotation
+#prodigal produces CDS (*.ffn) and ORF (*.ffa) files,
+parallel -j 30 prodigal -a {}.ffa -m -p meta -d {}.ffn -i {} -f gff -o {}.gff ::: *.fasta
+---------------------------------------------------------------------------------------------
+KEGG annotation
+for i in *.ffa;nohup /home/server/kofamscan/kofam_scan/exec_annotation -f mapper -o $i.ko $i --cpu 30 &
+parallel -j 30 sed 's/^/{}_/' {}..fasta.ffa.ko ::: 
+KEGG-decoder --input all.map --output all.list -v static
+---------------------------------------------------------------------------------------------
+emapper annotation
+download arCOG database:
+HMM database: download_eggnog_data.py -H -d 2157
+DIAMOND database: create_dbs.py -m diamond --dbname Archaea --taxa Archaea
+export EGGNOG_DATA_DIR=/home/disk2/DATABAE/eggNOG
+annotate base on DIAMOND_blast
+
+run program under conda env Metagenome, because emapper need diamond version above 2.0.0
+emapper.py -m diamond --cpu 30 --itype proteins -i MT1_bin.50.ffa --dmnd_db /home/disk2/DATABAE/eggNOG/Archaea.dmnd --output MT1_bin50
+
+annotate base on HMMER
+emapper.py -m hmmer --cpu 30 --itype proteins -i MT1_bin.50.ffa -d Archaea --output MT1_bin50_hmm
+---------------------------------------------------------------------------------------------------
+annotate base on pfam_scan crossponding to pfam database
+pfam_scan.pl -fasta MT1_bin.50.ffa -dir /home/server/PfamScan/database -cpu 30 -outfile MT1_bin.50.pfam.txt
+
+9. Profile of contig composition
+#Using output of <jgi_summarize_bam_contig_depths> to get the coverage information of contigs from each MAGs.
+	jgi_summarize_bam_contig_depths --outputDepth MT1_depth.txt --pairedContigs MT1_paired.txt --minContigLength 600 --minContigDepth 2 MT1_bwa.sort.bam
+#Using output of <gtdbtk classify_wf> to get the taxonomic information of contigs from each MAGs.
+
+#Visualization using R.
+```
+MT1_id <- read.csv("MT1_id.csv")
+MT1_bac_ta <- read.csv("MT1_ta.csv")
+MT1_bac <- merge(x=MT1_id,y=MT1_bac_ta,by="BinId")
+
+MT1_ta <- read.csv("MT1_ta-only-Thaumarchaeota.csv")
+MT1_coverage <- read.csv("MT1_coverage.txt",sep = '\t')
+MT1_all_coverage <- read.csv("MT1_all_coverage.txt",sep = '\t')
+MT1 <- merge(x=MT1_ta,y=MT1_all_coverage,by='BinId')
+MT1_GC <- read.csv("../MT1_scaffolds.txt",sep = '\t')
+MT1 <- merge(x=MT1,y=MT1_GC,by='Sequence.Id')
+
+MT1_cut <- MT1[-which(MT1$Sequence.length..bp.<4999),]
+MT1_cut$Phylum = factor(MT1_cut$Phylum, levels=c('Thaumarchaeota','Actinobacteriota','Bacteroidota','Chloroflexota','Marinisomatota','Proteobacteria','Planctomycetota','KSB1','Others','Unbinned'))
+library(ggplot2)
+library(ggforce)
+plot1_cut <- ggplot(MT1_cut, aes(x=100*GC, y=Coverage, fill=Phylum, size=Sequence.length..bp.))+
+  geom_point(alpha=0.85,shape=21)+
+  scale_fill_manual(values=c('#984ea3','#ff7f00','#ffff33','#a65628','#f781bf','#e41a1c','#377eb8','#4daf4a','#b3de69','#d9d9d9'))+
+  scale_alpha_manual(values=0.9)+
+  theme(axis.text.y=element_text(family="sans",size=12,face="plain"), 
+        axis.title.y=element_text(family="sans",size = 15,face="bold"), 
+        axis.text.x=element_text(family="sans",size=12,face="plain"), 
+        axis.title.x=element_text(family="sans",size = 15,face="bold"), 
+        panel.border = element_blank(),
+        axis.line = element_line(size=0.75), 
+        legend.position = "none",
+        panel.background = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key = element_blank(),
+        )+
+  scale_size('Contig length (nt)',breaks = c(5000,10000,20000,50000,100000))+
+  ylab("Coverage")+xlab("GC (%)")
+plot1_cut
+
+require(dplyr)
+MT1_cut_Thaumarchaeota <- MT1_cut%>%filter(Phylum=="Thaumarchaeota")
+plot1_cut_Thaumarchaeota <- ggplot(MT1_cut_Thaumarchaeota, aes(x=100*GC, y=Coverage, fill=Phylum, size=Sequence.length..bp.))+
+  geom_point(alpha=0.85,shape=21)+
+  scale_fill_manual(values=c("#984ea3"))+scale_alpha_manual(values=0.9)+
+  theme(axis.title.y=element_text(family="sans",color = 'black',size = 15,face="plain"), 
+        axis.title.x=element_text(family="sans",color = 'black',size = 15,face="plain"), 
+        panel.border = element_blank(),
+        axis.line = element_line(size=0.75), 
+        legend.position='none',
+        panel.background = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.key = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank()
+        )+
+  ylab("Coverage")+xlab("GC (%)")
+plot1_cut_Thaumarchaeota
+```
+
+10. Pan-genomic, functional, and metabolic comparison analyses
+
+for i in `ls *fasta | awk 'BEGIN{FS=".fasta"}{print $1}'`                                  [ 2:47PM]
+do
+    anvi-gen-contigs-database -f $i.fasta -o $i.db -T 30
+    anvi-run-hmms -c $i.db
+done
+
+anvi-pan-genome -g PAN-GENOMES.db --project-name "nonAOA_Pan" --output-dir nonAOA-PAN --num-threads 32 --minbit 0.5 --mcl-inflation 2 --use-ncbi-blast --enforce-hierarchical-clustering
+
+anvi-import-misc-data PAN_layer.txt -p nonAOA-PAN/nonAOA_Pan-PAN.db --target-data-table layers 
+
+anvi-compute-functional-enrichment -p nonAOA-PAN/nonAOA_Pan-PAN.db -g PAN-GENOMES.db --category Clade --annotation-source COG20_FUNCTION -o nonAOA-clade-COG-enriched.txt --functional-occurrence-table-output nonAOA-clade-COG-frequency.txt
+
+anvi-compute-functional-enrichment -p nonAOA-PAN/nonAOA_Pan-PAN.db -g PAN-GENOMES.db --category Type --annotation-source COG20_FUNCTION -o nonAOA-type-COG-enriched.txt --functional-occurrence-table-output nonAOA-type-COG-frequency.txt
+
+anvi-compute-functional-enrichment -p nonAOA-PAN/nonAOA_Pan-PAN.db -g PAN-GENOMES.db --category Group --annotation-source COG20_FUNCTION -o nonAOA-group-COG-enriched.txt --functional-occurrence-table-output nonAOA-group-COG-frequency.txt
+
+anvi-matrix-to-newick nonAOAko-completeness-MATRIX.txt
+
+anvi-interactive -d nonAOAko-completeness-MATRIX.txt -p nonAOA_metabolism_PROFILE.db --manual-mode --dry-run
+
+anvi-import-misc-data modules_info.txt -p nonAOA_metabolism_PROFILE.db -t items 
+
+anvi-db-info PAN-GENOMES.db
+
+anvi-compute-functional-enrichment -p nonAOA-PAN/nonAOA_Pan-PAN.db -g PAN-GENOMES.db --category Clade --annotation-source KOfam -o nonAOA-clade-KOfam-enriched.txt --functional-occurrence-table-output nonAOA-clade-KOfam-frequency.txt
+
+anvi-compute-functional-enrichment -p nonAOA-PAN/nonAOA_Pan-PAN.db -g PAN-GENOMES.db --category Type --annotation-source KOfam -o nonAOA-type-KOfam-enriched.txt --functional-occurrence-table-output nonAOA-type-KOfam-frequency.txt
+
+anvi-compute-functional-enrichment -p nonAOA-PAN/nonAOA_Pan-PAN.db -g PAN-GENOMES.db --category Group --annotation-source KOfam -o nonAOA-group-KOfam-enriched.txt --functional-occurrence-table-output nonAOA-group-KOfam-frequency.txt
+
+11. Global distribution
+#sra datasets download
+nohup /home/server/sratoolkit.2.11.0-ubuntu64/bin/fastq-dump -I --split-files --gzip SRR8709623 SRR12157857 SRR12157858 SRR12157854 SRR12157855 SRR12157856 SRR12157859(#all sra_id) &
+gzip -d -k *
+fq2fa --merge read_1.fastq read_2.fastq read.fa --filter
+#recogize rRNA sequences and mask them
+barrnap --kingdom arc  bin.fa --quiet > MT1_bin_50_rna.gff
+
+#make masked MAGs, all rna annotated by barrnap will mask as 'NNNNNNNNNNN' in contig sequences.
+maskFastaFromBed -fi MT1_bin_50.fa -bed MT1_bin_50_rna_mask.txt -fo MT1_bin_50_rna_mask.fa
+
+#make blast database:
+makeblastdb -in MT1_bin_50_rna_mask.fa -dbtype nucl -parse_seqids
+blastn -db MT1_bin_50_rna_mask.fa -query merge.fq  -out results.out -outfmt 6 -evalue 0.00001 -perc_identity 95 -num_threads 30
+
+#using python script calculate RPKG of each bin and merge all rpkg files
+
+import os
+import argparse
+import collections
+import pandas as pd
+
+parser = argparse.ArgumentParser(description='Global distribution calculation')
+parser.add_argument("-i", "--input", type=str, help="input")
+parser.add_argument("-n", "--name", type=str, help="name")
+parser.add_argument("-o", "--output", type=str, help="output")
+
+args = parser.parse_args()
+
+matrix1 = args.input
+matrix2 = args.name
+matrix3 = args.output
+
+with open(matrix1, "r+") as m1, open(matrix2, "r+") as m2, open(matrix3, "w+") as m3:
+    seq_id_set = set()
+    good_line = []
+    names = m2.read().splitlines()
+    line_number = 0
+    bin_blast_dir = collections.defaultdict(int)
+    while True:
+        line_number += 1
+        line = m1.readline()
+        if len(line) == 0:
+            break
+        else:
+            line_list = line.split("\t")
+            seq_id = line_list[0]
+            alignment_len = int(line_list[3])
+            if seq_id not in seq_id_set and alignment_len >= 50:
+                seq_id_set.add(seq_id)
+                good_line.append(line)
+                for name in names:
+                    if name in line:
+                        bin_blast_dir[name] += 1
+    for key, value in bin_blast_dir.items():
+        m3.write(key + "\t" + str(value) + "\n")
+
+files = os.listdir()
+for file in files:
+    if file.endswith("rpkg"):
+        sra_id = file.split(".")[0].replace("results_", "")
+        with open(file, "r+") as f:
+            content = f.read()
+            f.seek(0, 0)
+            f.write("Bin_name" + "\t" + sra_id + "\n" + content)
+
+new_files = os.listdir()
+
+# DataFrames = []
+merged_DataFrame = pd.DataFrame()
+for new_file in new_files:
+    if new_file.endswith("rpkg"):
+        DataFrame = pd.read_table(new_file, sep="\t", header=0)
+        # DataFrames.append(DataFrame)
+        if merged_DataFrame.empty:
+            merged_DataFrame = DataFrame
+        else:
+            merged_DataFrame = merged_DataFrame.merge(DataFrame, how='outer', on='Bin_name')
+
+merged_DataFrame.fillna(value=0)
+merged_DataFrame.to_csv("merge_rpkg.tsv", sep="\t", index=False)
+
+#visualized by ggplot2
+
+library(tidyverse)
+library(scatterpie)
+
+setwd("D:/DeepSea/2302/GlobalDistribution/")
+
+
+select_dis <- read_tsv("select_distribution.txt")
+world <- map_data('world')
+world
+p <- ggplot(world, aes(long, lat)) +
+  geom_map(map=world, aes(map_id=region), fill=NA, color="grey") +
+  coord_quickmap() +
+  # theme(panel.background = element_blank(), axis.line.y.left = element_line()) +
+  theme_classic()
+p
+
+sample_type_color = c("Hotspring" = "#F8766D",
+                      "Sediment" = "#A3A500",
+                      "Soil" = "#00BF7D",
+                      "Vent" = "#00B0F6",
+                      "Water" = "#E76BF3")
+
+sel_p <- p + geom_scatterpie(aes(x=Lon, y=Lat, r =4),
+                    data=select_dis, cols=c("Group-1.a", "Group-1.b",
+                                            "Group-1.c", "Group-2", 
+                                            "Group-3.a","Group-3.b", 
+                                            "Group-3.unk", "UBA141","AOA"),
+                    color=NA, alpha=.8) +
+  # geom_text(data = select_dis,aes(x=Lon,y = Lat,label = Sample_type), 
+  #           check_overlap = TRUE, vjust = 2.2) +
+  scale_fill_manual(values=c("Group-1.a" = "#990000", 
+                             "Group-1.b" = "#CC0000",
+                             "Group-1.c" = "#E06666", 
+                             "Group-2" = "#93C47D", 
+                             "Group-3.a" = "#FFE599",
+                             "Group-3.b" = "#9FC5E8", 
+                             "Group-3.unk" = "#0B5394", 
+                             "UBA141" = "#BCBCBC",
+                             "AOA" = "#8E7CC3")) + 
+  geom_point(aes(x =Lon, y=Lat, colour = Sample_type), 
+             data = select_dis, size =2,
+             stroke = 1)+
+  guides(color = guide_legend(override.aes = list(size = 6)))+
+  theme(legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 12))+
+  scale_color_manual(values = sample_type_color)
+
+sel_p
+  
+ggsave(filename = "select_distribution.pdf", plot =sel_p,width = 30, height = 20,
+       dpi = 300, units = "cm")
+
+
+
+
+group_thaum <- read_tsv("GroupThaum.txt")
+
+thaum_depth <- read_tsv("GroupThaum-depth.txt")
+
+group_thaum_depth <- group_thaum %>% 
+  pivot_longer(cols = !SRA_ID, names_to = "Group", values_to = "RPKG") %>% 
+  left_join(thaum_depth, by = "SRA_ID")
+
+group_depth_plt <- group_thaum_depth %>% 
+  ggplot(aes(Group, Depth))+
+  geom_point(aes(size=RPKG, colour=Sample_type), position = 'jitter') +
+  geom_vline(xintercept = c(1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5), linetype = "dashed")+
+  theme_classic()+
+  labs(size = "RPKG^(1/3)")+
+  guides(color = guide_legend(override.aes = list(size = 6)))+
+  scale_size_area()+
+  scale_color_manual(values = sample_type_color)+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0),
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 12))
+  
+
+group_depth_plt
+library(patchwork)
+library(cowplot)
+
+# create the patchwork layout with custom spacing for both plots
+merge_plt <- sel_p + group_depth_plt +
+  plot_layout(guides = 'collect')+
+  plot_annotation(tag_levels = "A")
+  plot_layout(widths = c(2,1))
+merge_plt
+
+
+ggsave("merge_plt.png", merge_plt, width = 30, height = 20, dpi = 300 )
+ggsave("merge_plt.pdf", merge_plt, width = 40, height = 30, dpi = 300 )
+
+
+
+12. Gene dynamics, OGT prediction, and organic metabolism potential
+12.1 Gene dynamics
+# Running orthofinder.
+```
+orthofinder -M msa -t 30 -f genome-translation
+```
+# Enter the directory <Orthogroup_Sequences>, and delete the <space> in each Orthogroup set.
+```
+for file in *.fa
+do
+    filename=`basename ${file}`
+    awk '!/^>/ { printf "%s", $0; n = "\n" }
+    /^>/ { print n $0; n = "" }
+    END { printf "%s", n }
+    ' ${filename} > ${filename}.fasta
+done
+rm -f *.fa
+```
+# Extract the longest gene in each Orthogroup set.
+```
+for file in *.fasta
+do
+    filename=`basename ${file}`
+    cat ${filename} | perl -e 'while (<>) {$h=$_; $s=<>; $seqs{$h}=$s;} foreach $header (reverse sort {length($seqs{$a}) <=> length($seqs{$b})} keys %seqs) {print $header.$seqs{$header}}' | head -2 > ${filename}-longest.fasta
+done
+```
+# Rename the sequence according to their file name in each Orthogroup set.
+```
+touch Rename_Orthogroup.py
+vim Rename_Orthogroup.py
+```
+```
+import os
+import sys
+import re
+try:
+    os.mkdir("ACT")
+except Exception as e:
+    print("")
+listfile=os.listdir(".")
+for line in listfile:  
+    if line.endswith("fasta") :
+        oldfile = open(line,"r")
+        newfile = open("Output_Rename_Orthogroup/"+line, "w")
+        newfile.write(">"+line.split(".")[0]+"\n")
+ 
+        content=oldfile.readline()
+        content=oldfile.read()
+        newfile.write(content)
+ 
+        newfile.close()
+        oldfile.close()
+
+```
+# Combine all Orthogroup gene sets.
+```
+cd Output_Rename_Orthogroup
+cat *.fasta > Combination_Orthogroup.fasta
+```
+# Annotate the Orthogroup genes.
+```
+cd Output_Rename_Orthogroup
+conda activate Metagenome
+export EGGNOG_DATA_DIR=/home/disk2/DATABAE/eggNOG
+emapper.py -m diamond --cpu 30 --itype proteins -i Combination_Orthogroup.fasta --dmnd_db /home/disk2/DATABAE/eggNOG/<Archaea.dmnd>or<Bacteria.dmnd> --output Result_of_Orthogroups-Diamond.UltraSensitive --sensmode ultra-sensitive
+```
+# Manually integrate the count (<Orthogroups/Orthogroups.GeneCount.tsv>) and annotation of Orthogroups.
+# Using COUNT software to perform the analysis of gene content evolution.
+
+12.2 OGT prediction
+#tome prediction optimal growth temperature
+tome preOGT --indir proteomes -o predicted_ogt.tsv
+#visualized in ggplot2
+setwd("D:/DeepSea/2302/OGT/")
+library(tidyverse)
+# install.packages("ggsignif")
+library(ggsignif)
+OGT <- read_tsv("Predict_OGT.txt")
+
+OGT
+
+OGT_plot <- OGT %>%
+  ggplot(aes(Group, Temperature, fill = Group))+
+  geom_boxplot()+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = -45, hjust = -0.1, size = 12),
+        legend.text = element_text(size = 12),
+        legend.title =element_text(size = 12))+
+  # geom_signif(comparisons = list(c("AOA", "Group-3.unk"),
+  #                                c("AOA", "Group-3.b"),
+  #                                c("AOA", "Group-3.a"),
+  #                                c("AOA", "Aigarchaeota"),
+  #                                c("AOA", "Group-1.a"),
+  #                                c("AOA", "Group-2")), 
+  #             map_signif_level = TRUE,
+  #             y_position = c(24,25,15.2,20,23,26)
+  # )+
+  scale_fill_manual(values = c("Group-1.a" = "#990000",
+                               "Group-1.b" = "#CC0000",
+                               "Group-1.c" = "#E06666", 
+                               "Group-2" = "#93C47D", 
+                               "Group-3.a" = "#FFE599",
+                               "Group-3.b" = "#9FC5E8", 
+                               "Group-3.unk" = "#0B5394",
+                               "AOA" = "#8E7CC3",
+                               "Aigarchaeota" = "#CE7E00"))
+OGT_plot
+ggsave('OGT_plt.pdf', OGT_plot, width = 40, height = 20, units = "cm", dpi = 300)
+
+
+12.3 organic metabolism potential
+
+#merge arCOG at COG_category
+import pandas as pd
+import glob
+import os
+
+os.chdir('egg/annotation')
+
+merge_table = pd.DataFrame()
+
+for file in glob.glob("*.annotations"):
+    df = pd.read_csv(file, sep="\t", header=0)
+    category = df.groupby(['COG_category']).agg({'query': 'count'}).reset_index()
+    category.columns = ['COG_category', file]
+    # print(category)
+    # category = df['COG_category'].value_counts().to_frame()
+    # category.columns = ['COG', 'Count']
+    # print(category)
+    if merge_table.empty:
+        merge_table = category
+    else:
+        merge_table = merge_table.merge(category, how='outer', on='COG_category').fillna(0)
+
+merge_table[['col1', 'col2', 'col3', 'col4', 'col5']] = merge_table['COG_category'].\
+    str.split('', expand=True)
+
+
+# print(merge_table[['col1', 'col2', 'col3', 'col4', 'col5']])
+
+grouped = merge_table.groupby(['col1', 'col2', 'col3', 'col4', 'col5'])
+grouped = pd.DataFrame(grouped)
+print(grouped.head())
+
+merge_table['COG_category'].str.split('')
+# merge_table['COG_category'].str.split('')[0]
+
+merge_table.to_csv('merge_table.txt', sep='\t')
+
+merge_table = pd.read_csv('merge_table.txt', sep='\t',header=0, index_col=0)
+
+split_table = merge_table['COG_category'].str.split('', expand=True)
+
+split_table = split_table.stack()
+
+split_table = split_table.reset_index(level=1, drop=True).rename('COG')
+
+table_new = merge_table.drop(['COG_category'], axis=1).join(split_table)
+
+grouped = table_new.groupby(['COG']).sum()
+
+grouped_df = pd.DataFrame(grouped)
+
+grouped_df = grouped_df.reset_index()
+
+grouped_mv = grouped_df.drop(index = [0])
+
+grouped_mv.to_csv('group_cog.tsv', sep='\t', index=True)
+
+cog_perc = grouped_mv.iloc[:,1:].apply(lambda x: x / x.sum() * 100).round(2)
+
+cog_perc = pd.concat([cog_perc, grouped_mv['COG']], axis=1)
+
+cog_perc.to_csv('cog_perc.txt', sep='\t', index=False)
+
+meta_data = pd.read_csv('meta_data.txt', sep='\t', header=0)
+
+cog_meta = pd.merge(cog_melt, meta_data, on='Bin')
+
+cog_des = pd.read_csv('cog_des.txt', sep='\t', header=0)
+cog_des.head()
+cog_merge = pd.merge(cog_meta, cog_des, on='COG')
+cog_merge.to_csv('cog_merge.txt', sep='\t', index=False)
+
+cog_merge_sum = cog_merge.groupby(['Bin', 'Annotation']).sum()
+cog_merge_sum = cog_merge_sum.reset_index()
+cog_merge_sum
+
+cog_final = pd.merge(cog_merge_sum, meta_data, on='Bin')
+cog_e = cog_meta[cog_meta['COG'] == 'E']
+cog_e.head()
+
+cog_energy = cog_final[cog_final['Annotation'] == 'Energy']
+cog_energy.head()
+
+cog_organic = cog_final[cog_final['Annotation'] == 'Organic']
+
+cog_meta.to_csv('cog_meta.txt', index=False, sep='\t')
+cog_organic.to_csv('cog_organic.txt', index=False, sep='\t')
+
+#visualized in ggplot2
+
+setwd("D:/DeepSea/2302/egg/annotation")
+
+library(tidyverse)
+install.packages("ggsignif")
+library(ggsignif)
+cog_organic <- read_tsv('cog_organic.txt')
+
+cog_subset <- cog_organic %>% 
+  filter(subset != c('Group-1.b','UBA')) %>% 
+  ggplot(aes(subset, Percent, fill = subset))+
+  geom_boxplot()+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = -45, hjust = -0.1, size = 12),
+        legend.text = element_text(size = 12),
+        legend.title =element_text(size = 12))+
+  geom_signif(comparisons = list(c("AOA", "Group-3.unk"),
+                                 c("AOA", "Group-3.b"),
+                                 c("AOA", "Group-3.a"),
+                                 c("AOA", "Aigarchaeota"),
+                                 c("AOA", "Group-1.a"),
+                                 c("AOA", "Group-2")), 
+              map_signif_level = TRUE,
+              y_position = c(24,25,15.2,20,23,26)
+              )+
+  scale_fill_manual(values = c("Group-1.a" = "#990000",
+                               "Group-1.c" = "#E06666", 
+                               "Group-2" = "#93C47D", 
+                               "Group-3.a" = "#FFE599",
+                               "Group-3.b" = "#9FC5E8", 
+                               "Group-3.unk" = "#0B5394",
+                               "AOA" = "#8E7CC3",
+                               "Aigarchaeota" = "#CE7E00"))
+  
+cog_subset
+
+cog_group <- cog_organic %>% 
+  filter(subset != c('Group-1.b','UBA')) %>% 
+  ggplot(aes(group, Percent, fill = group))+
+  geom_boxplot()+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = -45, hjust = -0.1, size = 12),
+        legend.text = element_text(size = 12),
+        legend.title =element_text(size = 12))+
+  geom_signif(comparisons = list(c("AOA", "Aigarchaeota"),
+                                 c("AOA", "Group-1"),
+                                 c("AOA", "Group-2"),
+                                 c("AOA", "Group-3")),
+              map_signif_level = TRUE,
+              y_position = c(19,25,26,27,28))+
+  scale_fill_manual(values = c("Group-1" = "#990000", 
+                               "Group-2" = "#93C47D",
+                               "Group-3" = "#0B5394",
+                               "AOA" = "#8E7CC3",
+                               "Aigarchaeota" = "#CE7E00"))
+
+cog_group
+
+library(patchwork)
+
+plt <- cog_group + cog_subset +
+  plot_annotation(tag_levels = "A")
+plt
+# ggsave('cog_plt.png', plt, width = 40, height = 30, units = "cm", dpi = 300)
+ggsave('cog_plt.pdf', plt, width = 50, height = 30, units = "cm", dpi = 300)
