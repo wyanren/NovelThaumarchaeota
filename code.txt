@@ -526,7 +526,17 @@ OGT_plot
 ggsave('OGT_plt.pdf', OGT_plot, width = 40, height = 20, units = "cm", dpi = 300)
 
 
-12.3 organic metabolism potential
+12.3 timing estimation
+# Add additional forty-seven archaeal genomes to the high-quality genome sets
+gtdbtk classify_wf --genome_dir genome_for_timing --out_dir gtdbtk --extension fasta --cpus 40 --pplacer_cpus 40
+
+# Here use the best parameter calculated previously in iqtree –– LG+F+R6
+iqtree -s gtdbtk.ar122.user_msa.fasta -m LG+F+R6 -bb 1000 -bnni -nt AUTO -cmax 15 -redo --threads-max 30
+
+# Using Reltime (Reltime-ML) in MEGA-X software to perform the timing estimation. Designate DPNN archaea as the outgroup, prepare the calibration file according to the literature (doi:10.1093/molbev/msab129), and run with the defaulted parameter.
+
+
+12.4 organic metabolism potential
 
 #merge arCOG at COG_category
 import pandas as pd
